@@ -1,0 +1,120 @@
+version: '3.8'
+
+services:
+  # --- 1. Proxy Inverso y SSL ---
+  caddy:
+    image: caddy:latest
+    container_name: caddy
+    restart: unless-stopped
+    env_file: .env
+    ports:
+      - "80:80"   # Para HTTP y redirección a HTTPS
+      - "443:443" # Para HTTPS
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile  # Archivo de configuración
+      - caddy_data:/data                  # Volumen para certificados SSL
+      - caddy_config:/config
+    networks:
+      - mi_stack_net
+
+  # --- 2. Base de Datos Principal ---
+  postgres:
+    image: postgres:15-alpine
+    container_name: postgres_db
+    restart: unless-stopped
+    env_file: .env # Carga las variables de .env
+    environment:
+      # Usa la variable de N8N como la DB por defecto que crea Postgres
+      - POSTGRES_DB=${POSTGRES_N8N_DB} 
+    volumes:
+      - postgres_data:/var/lib/postgresql/data            # Persistencia de datos de PG
+      - ./init-db:/docker-entrypoint-initdb.d # Ejecuta el script de creación de DBs
+    networks:
+      - mi_stack_net
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_N8N_DB}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # --- 3. Caché ---
+  redis:
+    image: redis:alpine
+    container_name: redis_cache
+    restart: unless-stopped
+    volumes:
+      - redis_data:/data
+    networks:
+      - mi_stack_net
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # --- 4. Servicio N8N ---
+  n8n:
+    image: n8nio/n8n:latest
+    container_name: n8n
+    restart: unless-stopped
+    env_file: .env # Carga las variables de .env
+    environment:
+      # --- Conexión a Postgres ---
+      - DB_TYPE=postgresdb
+      - DB_POSTGRESDB_HOST=postgres
+      - DB_POSTGRESDB_PORT=5432
+      - DB_POSTGRESDB_DATABASE=${POSTGRES_N8N_DB}
+      - DB_POSTGRESDB_USER=${POSTGRES_USER}
+      - DB_POSTGRESDB_PASSWORD=${POSTGRES_PASSWORD}
+      # --- Conexión a Redis para colas (CRUCIAL para rendimiento) ---
+      - QUEUE_BULL_REDIS_HOST=redis
+      - QUEUE_BULL_REDIS_PORT=6379
+      # --- Variables de N8N ---
+      - N8N_HOST=${N8N_DOMAIN}
+      - N8N_PROTOCOL=https
+      - NODE_ENV=production
+      - TZ=${GENERIC_TIMEZONE}
+    volumes:
+      - n8n_data:/home/node/.n8n
+    networks:
+      - mi_stack_net
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+  # --- 5. Servicio NocoDB ---
+  nocodb:
+    image: nocodb/nocodb:latest
+    container_name: nocodb
+    restart: unless-stopped
+    env_file: .env # Carga las variables de .env
+    environment:
+      # --- Conexión a Postgres ---
+      # Esta es la variable clave que le dice a NocoDB que use PG
+      - NC_DB=pg://postgres:5432?u=${POSTGRES_USER}&p=${POSTGRES_PASSWORD}&d=${POSTGRES_NOCODB_DB}
+      # --- Configuración Base ---
+      - NC_PORT=8080
+      - NC_PUBLIC_URL=https://{$NOCODB_DOMAIN}
+    volumes:
+      - nocodb_data:/usr/app/data
+    networks:
+      - mi_stack_net
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+# --- Volúmenes (para que tus datos no se borren) ---
+volumes:
+  caddy_data:
+  caddy_config:
+  postgres_data:
+  redis_data:
+  n8n_data:
+  nocodb_data:
+
+# --- Red Interna (para que los contenedores se comuniquen) ---
+networks:
+  mi_stack_net:
+    driver: bridge

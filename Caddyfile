@@ -1,0 +1,14 @@
+# Configuración global de Caddy
+{
+    email {$CADDY_EMAIL}
+}
+
+# Configuración de N8N
+{$N8N_DOMAIN} {
+    reverse_proxy n8n:5678
+}
+
+# Configuración de NocoDB
+{$NOCODB_DOMAIN} {
+    reverse_proxy nocodb:8080
+}
